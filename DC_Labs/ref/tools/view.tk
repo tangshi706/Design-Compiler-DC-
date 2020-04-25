@@ -1,0 +1,346 @@
+#!/bin/sh 
+# \
+exec wish "$0" "$@"
+
+#
+# Or change to this: #!/usr/local/bin/wish8.0
+#
+
+# 2010.09.16 amins
+# view.tk now accepts data from stdin, so you can do: cat xyz | view.tk
+#   this is the main interface to the view procedure via dc_shell. This avoids
+#   the use of temporary files. Also, the input is read asynchronously, so if e.g.
+#   a timing report is sent to view, the window will already open but may be empty
+#   until the timing update has completed. On the Synopsys tool side we write directly
+#   to the stdin channel of view.
+#   So view now only takes one argument if any. If the argument is a valid file, it will be
+#   opened. If the file is not a valid file, the argument is used to set the window title, and
+#   the content is read from stdin.
+
+# 2010.03.11 amins
+# Added a simple help window (control-h) that shows available key-bindings.
+# Fix: Save As was not saving current content, but original document instead.
+#
+# 2010.02.17 amins
+# Added search counters
+# Changed default text wrap mode to none - lines will be truncated. To toggle, press Control-w
+# view.tk doesn't delete the file it's showing unless true is passed as a 3rd argument
+# Changed layout of buttons slightly
+# More shortcuts
+#   control-w     toggle text wrap mode
+#   control-m     tag selection
+#   F3            jump to next occurrence
+#   Shift-F3      jump to previous occurrence
+#   Enter         in RE search box tags text
+#
+#
+# 2010.02.15 amins
+# Search window now integrated in main window, and replaces standard buttons
+# Added "Next/Prev Tag" functionality
+# Added following keyboard shortcuts:
+#   control-f     display search dialog
+#   esc           close search dialog
+#   control-n     jump to next occurrence
+#   control-p     jump to previous occurrence
+#   control-s     save content
+#   control-x     exit (close main window)
+#
+#
+# 2007.10.11 amins
+# Added tagging/search functionality
+# The search dialog uses regular expressions as input
+# You can also select text, then tag all text that matches the selection
+#
+# 2003.10.20 amins
+# Added save_as functionality
+# Font selection made more general
+# Better handling of temporary files
+
+
+set myfont(cr)   {-*-screen-medium-*-*-*-12-*-*-*-*-*-*-*}
+set myfont(bf)   {-*-application-bold-i-*-*-12-*-*-*-*-*-*-*}
+set myfont(i)    {-*-application-medium-i-*-*-12-*-*-*-*-*-*-*}
+set myfont(bfr)  {-*-application-bold-r-*-*-12-*-*-*-*-*-*-*}
+
+
+# Very basic argument handling: If the first argument is a file, use that as input
+# If it's not a file, we use it as the window title.
+# We ignore all other arguments
+set filename ""
+set window_title ""
+if {$argc > 0} {
+	set arg [lindex $argv 0]
+	if {[file exists $arg]} {
+		set filename $arg
+	}
+	set window_title $arg
+}
+
+set search(num) 0
+set search(current_line) 0
+set search(current_pos) 0
+set search(index) 0
+set search(text) ""
+
+# Procedure to save the displayed content:
+proc save_as {content} {
+
+	#   Type names			Extension(s)
+	#
+	#---------------------------------------------------------
+	set types {
+		{"Text files"		{.txt .doc}	}
+		{"All files"		*}
+	}
+	set file [tk_getSaveFile -filetypes $types -parent . -initialfile Untitled]
+	
+	if {$file != ""} {
+		# Save contents to a file:
+		set FILE [open $file w]
+		puts $FILE $content
+		close $FILE;
+		#puts "\nview.tk Window content saved as $file\n"
+	}
+}
+
+proc TagSelection {} {
+	set a ""
+	catch {set a [selection get]}
+	if {$a != ""} { TagAll $a }
+}
+
+proc TagAll {searchtext} {
+	global search
+	
+	set search(text) $searchtext
+	set found 0
+	scan [.text index end] %d nl
+	# Search the text line by line
+	for {set i 1} {$i < $nl} {incr i} {
+		set pos $i.0
+		set lastpos [.text index $i.end]
+	
+		# Scan the entire line until the end
+		while {$pos < $lastpos} {
+			set pos [.text search -forwards -count match_len -regexp -- "$searchtext" $pos $i.end]
+			if {$pos != ""} {
+				if {$found == 0} {
+					set found 1
+					.text see $pos
+					set search(current_pos) $pos
+					set search(current_line) $i
+				}
+				scan $pos "%d.%d" line char
+				set endpos $i.[expr $char + $match_len]
+				set match [.text get $pos $endpos]
+				.text tag add $match $pos $endpos
+				.text tag configure $match -background yellow
+				set pos $endpos
+			} else {
+				break
+			}
+		}
+	}
+	
+	if {$found == 0} {
+		tk_messageBox -parent . -type ok -message "The pattern \"$searchtext\" was not found."
+	} else {
+		set search(num) [expr [llength [.text tag ranges $search(text)]] / 2]
+		update_index 0
+	}
+}
+
+proc update_index {{i 0}} {
+	global search
+	
+	if {$i == 0} {
+		set search(index) 1
+	} else {
+		set search(index) [expr $search(index) + $i]
+	}
+	# not nice - access to global conf...
+	.bottomline.snum configure -text "$search(index) / $search(num)"
+}
+
+proc FindNext {} {
+	global search
+
+	set pos [lindex [.text tag nextrange $search(text) [expr $search(current_line) + 1].0] 0]
+	if {$pos != ""} {
+		set search(current_line) [lindex [split $pos "."] 0]
+		.text see $pos
+		update_index 1
+	}
+	#FIXME: the search index is line by line, so the count will not be correct when there are multiple matches per line
+}
+
+proc FindPrev {} {
+	global search
+
+	set pos [lindex [.text tag prevrange $search(text) ${search(current_line)}.0] 0]
+	if {$pos != ""} {
+		set search(current_line) [lindex [split $pos "."] 0]
+		.text see $pos
+		update_index -1
+	}
+}
+
+proc DelAllTags {} {
+	global search
+	set search(text) ""
+	set search(num) 0
+	set search(current_line) 0
+	set search(index) 0
+	
+	foreach tag [.text tag names] {
+		.text tag remove $tag 1.0 end
+	}
+	
+}
+
+
+proc create_normal_buttons {{p ""}} {
+	global myfont
+	global search
+	
+	if {! [catch {pack info $p.tagsel}]} { return }
+	
+	destroy_search_buttons $p
+	
+	button $p.dismiss -fg red -font $myfont(bf) -relief groove -text "Close Window" -command "exit" -bd 1
+	button $p.search -fg blue -font $myfont(bf) -relief groove -text "RE Search..." -command "create_search_buttons $p" -bd 1
+	button $p.tagsel -fg blue -font $myfont(bf) -relief groove -text "Tag Selection" -command "TagSelection" -bd 1
+	button $p.prevtag -fg blue -font $myfont(bf) -relief groove -text "<" -command "FindPrev" -bd 1
+	label $p.snum -font $myfont(i) -text "$search(index) / $search(num)"
+	button $p.nexttag -fg blue -font $myfont(bf) -relief groove -text ">" -command "FindNext" -bd 1
+	button $p.deltags -fg blue -font $myfont(bf) -relief groove -text "Remove Tags" -command "DelAllTags" -bd 1
+	button $p.saveas -font $myfont(bf) -relief groove -text "Save As..." -command {save_as [.text get 1.0 end]} -bd 1
+	pack $p.search $p.tagsel $p.prevtag $p.snum $p.nexttag \
+		$p.deltags $p.saveas $p.dismiss -fill x -side left -expand yes -padx 3
+}
+proc destroy_normal_buttons {{p ""}} {
+	catch {
+		foreach b {dismiss search tagsel prevtag snum nexttag deltags saveas} {
+			destroy $p.$b
+		}
+	}
+}
+
+proc create_search_buttons {{p ""}} {
+	global myfont
+	global search
+	
+	if {! [catch {pack info $p.tagall}]} { return }
+	
+	destroy_normal_buttons $p
+	
+	label $p.label -font $myfont(bf) -fg blue -text "RegExp Search:  "
+	entry $p.entry -width 19 -bd 1 -textvariable searchtext
+	button $p.tagall -text "Tag" -fg blue -command {TagAll $searchtext} -font $myfont(bf) -relief groove -bd 1
+	button $p.prevtag -font $myfont(bf) -fg blue -relief groove -text "<" -command "FindPrev" -bd 1
+	label $p.snum -font $myfont(i) -text "$search(index) / $search(num)"
+	button $p.nexttag -font $myfont(bf) -fg blue -relief groove -text ">" -command "FindNext" -bd 1
+	button $p.deltags -font $myfont(bf) -fg blue -relief groove -text "Remove Tags" -command "DelAllTags" -bd 1
+	button $p.dismiss -fg red -text "Close Search" -command "create_normal_buttons $p" -font $myfont(bf) -relief groove -bd 1
+		
+	pack $p.label $p.entry $p.tagall $p.prevtag $p.snum $p.nexttag \
+		$p.deltags $p.dismiss -fill x -side left -expand yes -padx 3
+	
+	focus $p.entry
+	bind $p.entry "<Key-Return>" {TagAll $searchtext}
+}
+proc destroy_search_buttons {{p ""}} {
+	catch {
+		foreach b {label entry tagall prevtag snum nexttag deltags dismiss} {
+			destroy $p.$b
+		}
+	}
+}
+
+proc toggle_wrap {} {
+	global wrap_mode
+	if {$wrap_mode == "none"} {
+		set wrap_mode "char"
+	} else {
+		set wrap_mode "none"
+	}
+	.text configure -wrap $wrap_mode
+}
+
+proc show_help {} {
+	global myfont
+	
+	toplevel .help
+	wm title .help "Help"
+	
+	set helptext "                     
+  Control-f               Display search dialog
+  Enter                   In RE search dialog tags text
+  Esc                     Close search dialog
+  Control-n, F3           Jump to next occurrence
+  Control-p, shift-F3     Jump to previous occurrence
+  Control-s               Save content
+  Control-x               Exit (close main window)
+  Control-w               Toggle text wrap mode
+  Control-m               Tag selection
+  Control-h               Show this help window
+"            
+	text .help.text -font $myfont(cr) -relief sunken -bd 1 -bg grey80 -width 60 -height 12
+	.help.text insert end $helptext
+	pack .help.text
+	focus .help 
+}            
+             
+             
+####################################################################################
+# MAIN
+#
+# Build the interface
+wm title . "$window_title"
+tk_setPalette grey85
+
+set p ".bottomline"
+frame $p     
+pack $p -side bottom -pady 1m
+create_normal_buttons $p
+             
+set wrap_mode "none"
+text .text -font $myfont(cr) -relief sunken -bd 1 -bg grey80 -yscrollcommand ".scroll set" \
+	-setgrid 1 -height 45 -wrap $wrap_mode
+scrollbar .scroll -command ".text yview" -bd 1
+pack .scroll -side right -fill y
+pack .text -expand yes -fill both -padx 3
+             
+###########################################################
+# Read content to display from stdin
+if {$filename != ""} {
+	set f [open "$filename" r]
+} else {
+	set f stdin
+}
+
+fconfigure $f -blocking 0
+fileevent $f readable "readMe $f"
+proc readMe chan {
+	if {[gets $chan line] < 0} {
+		if {[catch {gets $chan line} len] || [eof $chan]} {
+			close $chan
+			return
+		}
+	} else {
+		.text insert end $line\n
+	}
+}
+
+bind . "<Control-f>" "create_search_buttons $p"
+bind . "<Control-m>" TagSelection
+bind . "<Control-n>" FindNext
+bind . "<Key-F3>" FindNext
+bind . "<Control-p>" FindPrev
+bind . "<Shift-F3>" FindPrev
+bind . "<Control-w>" toggle_wrap
+bind . "<Key-Escape>" "create_normal_buttons $p"
+bind . "<Control-s>" {save_as [.text get 1.0 end]}
+bind . "<Control-x>" {exit}
+bind . "<Control-h>" {show_help}
+
