@@ -1,0 +1,8 @@
+set_app_var search_path "$search_path mapped rtl lib cons"
+set_app_var target_library 65nm_wc.db
+set_app_var link_library "* $target_library"  ;#"*"表示在内存中去找
+set_app_var symbol_library 65nm.sdb
+
+history keep 200
+alias h history
+alias rc "report_constraint -all_viloators"
