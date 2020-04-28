@@ -1,6 +1,6 @@
 set_app_var search_path "$search_path mapped rtl lib cons"
-set_app_var target_library 65nm_wc.db
-set_app_var link_library "* $target_library"  ;#"*"表示在内存中去找
+set_app_var target_library 65nm_wc.db ;#这个是用来做mapping的时候使用的一个库
+set_app_var link_library "* $target_library"  ;#"*"表示在内存中去找，这个库是用来解析verilog中的需要的东西的
 set_app_var symbol_library 65nm.sdb
 
 history keep 200
